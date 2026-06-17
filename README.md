@@ -1,135 +1,143 @@
 # raycaster — 2D LiDAR ray-casting benchmark & comparison
 
-UNICORN racing-stack의 2D 라이다 **raycaster(광선 투사)** 구현들을 정리·비교·검증하는 도구.
-시뮬레이터와 파티클 필터의 성능은 사실상 raycaster 효율이 좌우하므로, 어떤 방법이 어떤
-워크로드(특히 저사양 하드웨어)에 적합한지 정량적으로 측정한다.
+A tool for organizing, comparing, and validating the 2D LiDAR **raycaster** implementations in the UNICORN racing-stack.
+Since simulator and particle-filter performance are effectively governed by raycaster efficiency, this measures quantitatively which method suits which workload (especially on low-end hardware).
 
-> ROS 패키지가 아니라 **연구/벤치마크 도구**다 (`COLCON_IGNORE` 포함, colcon 빌드 제외).
-> 향후 NUC·Mac mini 등에서 재측정해 `results/`에 날짜별로 누적한다.
+> This is a **research/benchmark tool**, not a ROS package (it includes `COLCON_IGNORE` and is excluded from colcon builds).
+> Going forward, we re-measure on NUC, Mac mini, etc. and accumulate dated results under `results/`.
 
-## 구조
+## Structure
 ```
 tools/raycaster/
-├── README.md                 # 이 문서 (분석·결론·알고리즘·참고)
-├── SETUP.md                  # 재현 환경 구축 (venv, range_libc 빌드, jax)
-├── raycaster.py              # ★ 통합 라이브러리 RaycastEngine (sim + PF 공용)
+├── README.md                 # this document (analysis, conclusions, algorithms, references)
+├── SETUP.md                  # reproducible env setup (venv, range_libc build, jax)
+├── raycaster.py              # ★ unified library RaycastEngine (shared by sim + PF)
 ├── benchmarks/
 │   ├── bench_raycast.py       # numba + range_libc(bl/rm/cddt/pcddt/glt) + segment
 │   ├── bench_jax.py           # jax DT sphere-tracing (single/batch, GPU/CPU)
-│   ├── bench_workload.py      # 실시간 타당성: SIM vs PF 워크로드 검증
-│   └── precompute_lut.py      # GLT/CDDT LUT 사전계산 → 저장 → 로드 테스트
+│   ├── bench_workload.py      # real-time feasibility: SIM vs PF workload validation
+│   └── precompute_lut.py      # GLT/CDDT LUT precompute → save → load test
 └── results/
-    ├── 2026-06-17_ryzen7950x_rtx4080super.md   # 머신별 원시 결과(날짜+환경)
-    └── ray_casting_methods_comparison.html      # 인터랙티브 시각화
+    ├── 2026-06-17_ryzen7950x_rtx4080super.md   # per-machine raw results (date + environment)
+    └── ray_casting_methods_comparison.html      # interactive visualization
 ```
 
-## 핵심 결과 (Ryzen 7950X + RTX 4080S, 2026-06-17 — 전체는 `results/`)
+## Key Results (Ryzen 7950X + RTX 4080S, 2026-06-17 — full data in `results/`)
 
-`1 scan = 1080-beam 프레임 1개`. 단일 스캔 처리량:
+`1 scan = one 1080-beam frame`. Single-scan throughput:
 
-| Raycaster | Backend | scans/s | vs numba | 한 줄 평 |
+| Raycaster | Backend | scans/s | vs numba | One-liner |
 |---|---|--:|--:|---|
-| jax DT-march, batched | GPU | 155,300 | 9.7× | 대량 병렬 최강(NVIDIA 필요) |
-| range_libc **GLT** | CPU | 147,700 | 9.2× | 단일 최고속, init·메모리 큼 |
-| range_libc **PCDDT/CDDT** | CPU | ~52,000 | ~3× | **균형 — 추천** |
-| range_libc RM | CPU | 23,500 | 1.5× | 단순·견고 |
-| **numba f1tenth_gym** *(현재 sim)* | CPU | 16,100 | 1.0× | 기준선 |
-| range_libc BL (Bresenham) | CPU | 3,600 | 0.2× | 느림 |
+| jax DT-march, batched | GPU | 155,300 | 9.7× | Best for massive parallelism (needs NVIDIA) |
+| range_libc **GLT** | CPU | 147,700 | 9.2× | Fastest single, large init & memory |
+| range_libc **PCDDT/CDDT** | CPU | ~52,000 | ~3× | **Balanced — recommended** |
+| range_libc RM | CPU | 23,500 | 1.5× | Simple & robust |
+| **numba f1tenth_gym** *(current sim)* | CPU | 16,100 | 1.0× | Baseline |
+| range_libc BL (Bresenham) | CPU | 3,600 | 0.2× | Slow |
 
-### 실시간 타당성 — Simulator vs Particle Filter (저사양 핵심)
+### Real-time Feasibility — Simulator vs Particle Filter (low-end focus)
 
-| 워크로드 | 패턴 | 요구량 |
+| Workload | Pattern | Demand |
 |---|---|--:|
 | Simulator | 2 lidar × 40 Hz × 2200 beams | 176 k rays/s (latency) |
 | Particle Filter | 4000 particles × 100 beams × 40 Hz | 16 M rays/s (throughput) |
 
-25 ms/cycle 예산, headroom = 25 ms / 측정시간 (≈ N배 느린 HW까지 실시간 가능):
+25 ms/cycle budget, headroom = 25 ms / measured time (≈ how many × slower HW still runs real-time):
 
-| 방법 | SIM ↑ | PF ↑ | 판정 |
+| Method | SIM ↑ | PF ↑ | Verdict |
 |---|--:|--:|---|
-| numba / jax-CPU | 117× / 40× | **0.7× / 0.4×** | **PF 실패(데스크탑서도)** |
-| range_libc cddt/pcddt | ~300× | ~3× | PF OK(약한 랩탑선 위험) |
-| **range_libc glt** | 1048× | **16×** | **PF 안전(저사양도)** |
-| jax-GPU | 25× | 9× | PF OK(NVIDIA GPU 한정) |
+| numba / jax-CPU | 117× / 40× | **0.7× / 0.4×** | **PF fails (even on desktop)** |
+| range_libc cddt/pcddt | ~300× | ~3× | PF OK (risky on weak laptops) |
+| **range_libc glt** | 1048× | **16×** | **PF safe (even low-end)** |
+| jax-GPU | 25× | 9× | PF OK (NVIDIA GPU only) |
 
-**결론**
-- **Simulator**: latency-bound, 전부 100×+ 여유 → 저사양 문제없음. *코드 통일* 기준으로 선택.
-- **Particle Filter**: throughput-bound, 진짜 제약. numba·jax-CPU는 실시간 실패.
-  저사양/휴대형까지 보장하려면 **PF = range_libc GLT(CPU)**. 부담 시 PCDDT + 파티클/beam 축소.
+**Conclusion**
+- **Simulator**: latency-bound, everything has 100×+ headroom → no problem on low-end. Choose it on the basis of *code unification*.
+- **Particle Filter**: throughput-bound, the real constraint. numba and jax-CPU fail real-time.
+  To guarantee even low-end/portable hardware, use **PF = range_libc GLT (CPU)**. If that's too heavy, use PCDDT + fewer particles/beams.
 
-### jax-GPU 플랫폼 가용성
+### jax-GPU Platform Availability
 
-| 플랫폼 | jax GPU | PF 가능? |
+| Platform | jax GPU | PF possible? |
 |---|---|---|
 | NVIDIA dGPU | ✅ `jax[cuda]` | ◎ |
-| Intel iGPU (NUC) | ❌ CPU 폴백 (`intel-extension-for-openxla`는 실험적/Arc 위주) | ❌ |
-| Apple Silicon (Mac mini) | △ `jax-metal` 실험적·미완성 | ✗ 신뢰불가 |
-| GPU 없음 | ❌ | ❌ |
+| Intel iGPU (NUC) | ❌ CPU fallback (`intel-extension-for-openxla` is experimental/Arc-focused) | ❌ |
+| Apple Silicon (Mac mini) | △ `jax-metal` experimental & incomplete | ✗ unreliable |
+| No GPU | ❌ | ❌ |
 
-→ NUC·Mac mini 등에선 jax-GPU에 의존 불가. **range_libc(CPU)** 가 이식성·성능 모두 정답
-(C++라 x86/ARM 어디서나 컴파일). range_libc `rmgpu`도 CUDA 전용이라 같은 한계.
+→ On NUC, Mac mini, etc. you can't rely on jax-GPU. **range_libc (CPU)** is the right answer for both portability and performance
+(being C++, it compiles anywhere on x86/ARM). range_libc `rmgpu` is also CUDA-only, so it shares the same limitation.
 
-## 알고리즘 한눈에 ("0.01씩 전진"은 naive 버전)
+## Algorithms at a Glance ("step forward by 0.01" is the naive version)
 
-| 방법 | 원리 |
+| Method | Principle |
 |---|---|
-| **Bresenham/DDA** (`bl`) | 격자를 셀 단위 정수 증분으로 이동하며 점유 검사 (고정 스텝의 정수판) |
-| **Ray marching = sphere tracing** (`rm`, numba, jax) | **거리 변환(DT)** 으로 "가장 가까운 장애물 거리"만큼 한 번에 점프 → 적응형. ("0.01 step"의 똑똑한 버전) |
-| **CDDT / PCDDT** (`cddt`) | 방향을 이산화해 거리 LUT를 압축 저장, 쿼리는 lookup+보간. PCDDT는 가지치기 |
-| **Giant LUT** (`glt`) | (x,y,θ)→거리 전체 precompute, O(1) 조회. 최고속·고메모리 |
-| **Segment analytic** | 광선-선분 교차 해석 계산. 격자 무관·정확 (2D z-buffer로 가속 가능) |
+| **Bresenham/DDA** (`bl`) | Steps through the grid cell by cell with integer increments, checking occupancy (the integer version of a fixed step) |
+| **Ray marching = sphere tracing** (`rm`, numba, jax) | Uses a **distance transform (DT)** to jump by the "distance to the nearest obstacle" in one go → adaptive. (The smart version of the "0.01 step") |
+| **CDDT / PCDDT** (`cddt`) | Discretizes direction to store a compressed distance LUT; queries are lookup + interpolation. PCDDT adds pruning |
+| **Giant LUT** (`glt`) | Precomputes the full (x,y,θ)→distance, O(1) lookup. Fastest, high memory |
+| **Segment analytic** | Computes ray-segment intersection analytically. Grid-independent & exact (can be accelerated with a 2D z-buffer) |
 
-> numba·range_libc `rm`·jax는 **모두 같은 DT sphere-tracing 알고리즘**, 구현(numba/C++/XLA)만 다름.
+> numba, range_libc `rm`, and jax are **all the same DT sphere-tracing algorithm**; only the implementation (numba/C++/XLA) differs.
 
-## range_libc 전체 스택 통일 전략
+## Strategy: Unify the Whole Stack on range_libc
 
-particle_filter는 이미 range_libc(`pcddt`)를 쓴다. 시뮬레이터(`f1tenth_gym_ros`)의 numba도
-range_libc 백엔드로 교체하면 **sim·localization·(옵션)planner가 단일 raycast 엔진**을 공유 →
-맵 로딩·좌표 규약·거리 정의 일원화, 유지보수 단순. 한 번 빌드한 `range_libc.so` 공유.
-권장: sim 백엔드를 PCDDT(또는 저사양 대비 GLT/LUT)로 교체 → numba와 출력 일치 검증 → 통일.
+particle_filter already uses range_libc (`pcddt`). If the simulator's (`f1tenth_gym_ros`) numba is also swapped for the
+range_libc backend, then **sim, localization, and (optionally) planner share a single raycast engine** →
+map loading, coordinate conventions, and distance definitions are unified, simplifying maintenance. Share one built `range_libc.so`.
+Recommended: swap the sim backend to PCDDT (or GLT/LUT for low-end) → verify output matches numba → unify.
 
-## 통합 라이브러리 `RaycastEngine` ([raycaster.py](raycaster.py))
+## Unified Library `RaycastEngine` ([raycaster.py](raycaster.py))
 
-sim과 PF가 **함께 쓰는 단일 raycaster**. 백엔드 교체식(`pcddt`/`cddt`/`rm`/`glt` = range_libc,
-또는 `lut` = numpy 사전계산). world↔pixel 변환 내장.
+A **single raycaster used by both sim and PF**. Self-contained: vendored
+[range_libc](range_libc/) + numba [laser_models](vendor/) (no external repo needed).
 
 ```python
 from raycaster import RaycastEngine
 occ, res, origin = RaycastEngine.load_map_yaml("maps/f/f.yaml")
-e = RaycastEngine(backend="pcddt", max_range_m=10.0).set_map(occ, res, origin)
-ranges = e.scan([x, y, theta], num_beams=1080, fov=4.7)          # 시뮬레이터
-ranges = e.calc_range_repeat_angles(particles[M,3], angles[K])    # 파티클 필터
+e = RaycastEngine(backend="lut", max_range_m=10.0, theta_disc=720).set_map(occ, res, origin)
+ranges = e.scan([x, y, theta], num_beams=1080, fov=4.7)          # simulator
+ranges = e.calc_range_repeat_angles(particles[M,3], angles[K])    # particle filter
 ```
-- **Simulator**: `scan(pose, num_beams, fov)` — numba `ScanSimulator2D` 대체.
-- **Particle filter**: `calc_range_repeat_angles(...)` — 기존 range_libc 호출 그대로 래핑.
+- **Simulator**: `scan(pose, num_beams, fov)` — drop-in for numba `ScanSimulator2D`.
+- **Particle filter**: `calc_range_repeat_angles(...)`.
 
-### 사전계산 LUT (`backend='lut'`) — 저사양/이식성의 핵심
-GLT/CDDT 테이블을 **한 번 계산해 `.npz`로 저장 → 로드 후 numpy 인덱싱만으로 쿼리**.
-`f` 맵 측정(Ryzen 7950X):
+**Backends**
+- `lut` ★ — precomputed numpy table, **built from the numba f1tenth_gym oracle** →
+  frame-matches the existing simulator exactly; pure-numpy at query time → **no
+  range_libc needed → portable to NUC / Mac mini**.
+- `pcddt`/`cddt`/`rm`/`glt`/`bl` — vendored range_libc C++ (fast). ⚠ range_libc's
+  numpy-array `PyOMap` has a coordinate quirk on real (flipped / non-square) maps;
+  use `lut` for a verified drop-in, or load maps via range_libc's PNG/ROS-grid path.
 
-| 단계 | 결과 |
-|---|---|
-| 사전계산(1회) | CDDT build + materialize ≈ 1.9 s |
-| 저장 `.npz`(압축) | **6.9 MB** |
-| 로드 | **158 ms** |
-| PF 4000×100 쿼리 | **2.1 ms → 11.7× 실시간** (pcddt 5.6×보다 빠름) |
-| 정확도 | pcddt 대비 1.4 cm (112-bin θ 양자화) |
+### Simulator drop-in — verified vs the existing numba sim (`f` map, [`sim_compare.py`](benchmarks/sim_compare.py))
+
+| backend | vs existing numba | speed |
+|---|---|---|
+| **lut (TD=720, numba oracle)** | **MAE 1.7 cm, 97.7% within 10 cm** | **2.8× faster** (37k vs 13k scans/s) |
+
+The 1.7 cm is pure angle quantization (720 bins); raise `theta_disc` for less error
+(more memory). → RaycastEngine produces the **same scan as the current simulator, 2.8× faster.**
+
+### Precompute → save → load (`backend='lut'`) — low-end / portability
+Build the table **once, save `.npz`, then load and query with pure numpy** (no range_libc, no numba):
 
 ```python
-RaycastEngine(backend="lut").set_map(occ, res, origin).save_lut("f_lut.npz")  # 1회
-e = RaycastEngine.load_lut("f_lut.npz")    # 이후: range_libc 불필요 → NUC/Mac mini도 OK
+RaycastEngine(backend="lut", theta_disc=720).set_map(occ, res, origin).save_lut("f_lut.npz")  # once (~build s)
+e = RaycastEngine.load_lut("f_lut.npz")    # afterwards: numpy only → NUC / Mac mini OK
 ```
-→ **`.npz`만 복사하면 range_libc 빌드 없이** PF가 11× 실시간으로 돈다. NUC·Mac mini 대비책.
-(주의: range_libc **GLT는 일부 고점유 맵에서 0을 반환**하는 버그가 있어 LUT oracle은 CDDT 사용.)
+PF (4000×100) runs at multiple-× real-time from the loaded table. **Copy the `.npz`
+to a NUC / Mac mini and both sim and PF run without building range_libc.**
+(`theta_disc` trades accuracy vs memory: 112 ≈ PF-grade, 720 ≈ sim-grade.)
 
-## 재현
-[`SETUP.md`](SETUP.md) 참고. 요약:
+## Reproduce
+See [`SETUP.md`](SETUP.md). Summary:
 ```bash
-# 의존: creating_autonomous_car 의 f110_gym / slam/range_libc / stack_master/maps
-export CAC_DIR=/path/to/creating_autonomous_car      # 기본값은 HMCL 데스크탑 경로
+# deps: creating_autonomous_car's f110_gym / slam/range_libc / stack_master/maps
+export CAC_DIR=/path/to/creating_autonomous_car      # default is the HMCL desktop path
 $VENV/python benchmarks/bench_raycast.py             # MAP=test|f
-$VENV/python benchmarks/bench_jax.py                 # JAX_PLATFORMS=cpu 로 CPU
-$VENV/python benchmarks/bench_workload.py            # SIM vs PF 실시간 검증
+$VENV/python benchmarks/bench_jax.py                 # JAX_PLATFORMS=cpu for CPU
+$VENV/python benchmarks/bench_workload.py            # SIM vs PF real-time check
 ```
 
 ## References
