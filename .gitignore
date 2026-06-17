@@ -4,3 +4,7 @@ __pycache__/
 build/
 *.egg-info/
 .venv/
+
+# precomputed LUT caches (large, regenerable via benchmarks/precompute_lut.py)
+precomputed/*.npz
+precomputed/*.npy
