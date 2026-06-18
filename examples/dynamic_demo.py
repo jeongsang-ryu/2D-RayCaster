@@ -27,7 +27,7 @@ CAC = os.environ.get("CAC_DIR", "/home/js/unicorn_racing_stack/src/creating_auto
 class DynamicDemo(Node):
     def __init__(self):
         super().__init__("raycast_dynamic_demo")
-        self.backend = self.declare_parameter("backend", "glt").value
+        self.backend = self.declare_parameter("backend", "rm").value   # rm = exact for sim; glt/lut for PF batch
         mapname = self.declare_parameter("map", "f").value
         self.nb = self.declare_parameter("num_beams", 1080).value
         self.fov = self.declare_parameter("fov", 4.7).value
