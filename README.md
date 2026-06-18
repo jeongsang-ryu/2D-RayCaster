@@ -134,6 +134,19 @@ PF (4000×100) runs at multiple-× real-time from the loaded table. **Copy the `
 to a NUC / Mac mini and both sim and PF run without building range_libc.**
 (`theta_disc` trades accuracy vs memory: 112 ≈ PF-grade, 720 ≈ sim-grade.)
 
+## RViz demo ([`examples/`](examples/))
+
+Drives a pose around an F1TENTH map and publishes the live RaycastEngine scan
+(`/scan`) + map (`/map`) + TF for RViz — proof the engine runs inside ROS 2 Jazzy.
+
+```bash
+# build range_libc for the ROS python (3.12) first:
+(cd range_libc/pywrapper && WITH_CUDA=OFF /usr/bin/python3 setup.py build_ext --inplace)
+examples/run_demo.sh rm f          # backend=rm, map=f   (try: pcddt / glt / lut ; test / f)
+```
+`examples/rviz_demo.py` is a plain rclpy node — the same `RaycastEngine.scan(pose, n, fov)`
+call is what replaces numba `ScanSimulator2D` in `f1tenth_gym_ros`.
+
 ## Reproduce
 See [`SETUP.md`](SETUP.md). Summary:
 ```bash
