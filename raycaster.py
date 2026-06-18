@@ -135,7 +135,7 @@ class RaycastEngine:
     def scan_with_dynamics(self, pose, num_beams, fov, opp_poses=None,
                            opp_size=(0.58, 0.31), obstacles=None, max_range=None, miss=np.nan):
         """Static precomputed scan + ray-cast overlay of opponents (rotated boxes)
-        and obstacles (circles, [K,3] = x,y,radius). Per beam: min(static, dynamic).
+        and obstacles (axis-aligned squares, [K,3] = x,y,half_side). Per beam: min(static, dynamic).
         Same idea f1tenth_gym uses for opponents — keeps GLT/CDDT/LUT precompute intact.
         miss (default nan) marks beams that returned nothing within max_range."""
         mr = max_range or self.max_range_m
@@ -143,27 +143,27 @@ class RaycastEngine:
         ang = pose[2] + np.linspace(-fov / 2, fov / 2, num_beams)
         dx, dy = np.cos(ang), np.sin(ang)
         px, py = float(pose[0]), float(pose[1])
-        if obstacles is not None and len(obstacles):                      # ray vs circle
+        if obstacles is not None and len(obstacles):                      # ray vs SQUARE (axis-aligned, side 2r)
             for cx, cy, r in np.asarray(obstacles, float):
-                ox, oy = cx - px, cy - py
-                proj = ox * dx + oy * dy
-                perp2 = (ox * ox + oy * oy) - proj * proj
-                hit = (perp2 < r * r) & (proj > 0)
-                d = proj - np.sqrt(np.maximum(r * r - perp2, 0.0))
-                scan = np.where(hit & (d < scan), d, scan)
-        if opp_poses is not None and len(opp_poses):                      # ray vs box edges
+                scan = self._overlay_box(scan, (cx, cy, 0.0), 2 * r, 2 * r, px, py, dx, dy)
+        if opp_poses is not None and len(opp_poses):                      # ray vs oriented box (opponent car)
             for op in np.asarray(opp_poses, float):
-                V = self._vertices(op, opp_size[0], opp_size[1]); W = np.roll(V, -1, 0)
-                for a, e in zip(V, W - V):
-                    det = e[0] * dy - e[1] * dx
-                    safe = np.abs(det) > 1e-12
-                    den = np.where(safe, det, 1.0)
-                    wx, wy = a[0] - px, a[1] - py
-                    t = (e[0] * wy - e[1] * wx) / den
-                    u = (dx * wy - dy * wx) / den
-                    ok = safe & (t > 0) & (u >= 0) & (u <= 1) & (t < scan)
-                    scan = np.where(ok, t, scan)
+                scan = self._overlay_box(scan, op, opp_size[0], opp_size[1], px, py, dx, dy)
         return self._apply_miss(np.minimum(scan, mr), mr, miss)
+
+    def _overlay_box(self, scan, box_pose, length, width, px, py, dx, dy):
+        """min(scan, distance to a rotated rectangle) per beam — ray vs 4 box edges."""
+        V = self._vertices(box_pose, length, width); W = np.roll(V, -1, 0)
+        for a, e in zip(V, W - V):
+            det = e[0] * dy - e[1] * dx
+            safe = np.abs(det) > 1e-12
+            den = np.where(safe, det, 1.0)
+            wx, wy = a[0] - px, a[1] - py
+            t = (e[0] * wy - e[1] * wx) / den
+            u = (dx * wy - dy * wx) / den
+            ok = safe & (t > 0) & (u >= 0) & (u <= 1) & (t < scan)
+            scan = np.where(ok, t, scan)
+        return scan
 
     # ---------- LUT internals ----------
     def _abin(self, phi):
