@@ -102,22 +102,26 @@ ranges = e.calc_range_repeat_angles(particles[M,3], angles[K])    # particle fil
 - **Simulator**: `scan(pose, num_beams, fov)` — drop-in for numba `ScanSimulator2D`.
 - **Particle filter**: `calc_range_repeat_angles(...)`.
 
-**Backends**
-- `lut` ★ — precomputed numpy table, **built from the numba f1tenth_gym oracle** →
-  frame-matches the existing simulator exactly; pure-numpy at query time → **no
-  range_libc needed → portable to NUC / Mac mini**.
-- `pcddt`/`cddt`/`rm`/`glt`/`bl` — vendored range_libc C++ (fast). ⚠ range_libc's
-  numpy-array `PyOMap` has a coordinate quirk on real (flipped / non-square) maps;
-  use `lut` for a verified drop-in, or load maps via range_libc's PNG/ROS-grid path.
+**Backends** — all verified vs the numba sim ([`benchmarks/verify_backends.py`](benchmarks/verify_backends.py), [`results/2026-06-18_range_libc_fixed.md`](results/2026-06-18_range_libc_fixed.md)):
+- `rm`/`cddt`/`pcddt`/`glt`/`bl`/**`rmgpu`** — vendored range_libc C++. The numpy
+  `PyOMap` ctor was **fixed** (it wrote a *transposed* grid + no world transform → wrong
+  on real maps) and the Cython wrapper **modernized for Jazzy** (Cython 3 / numpy 2 /
+  py3.12, no `old_build_ext`). Query in **world meters** directly.
+- `lut` — precomputed numpy table from the numba oracle → portable (no range_libc / numba
+  at query time → NUC / Mac mini).
 
-### Simulator drop-in — verified vs the existing numba sim (`f` map, [`sim_compare.py`](benchmarks/sim_compare.py))
+### Verified vs the existing numba sim (`f` map, 1080 beams)
 
-| backend | vs existing numba | speed |
-|---|---|---|
-| **lut (TD=720, numba oracle)** | **MAE 1.7 cm, 97.7% within 10 cm** | **2.8× faster** (37k vs 13k scans/s) |
+| backend | sim MAE vs numba | speed | use when |
+|---|--:|--:|---|
+| **rm** / **rmgpu** | **2.9 cm** (exact DT) | 1.3× CPU / GPU | accuracy; rmgpu for PF batches (4000×60 = **0.31 ms ≈ 80× real-time**) |
+| **glt** | 8.5 cm | **6.1×** | fastest CPU single scan (high memory) |
+| **pcddt** | 9.0 cm | 2.1× | low memory / init (PF default) |
+| **lut** (TD=720) | 1.8 cm | 2.8× | portable, no range_libc needed |
 
-The 1.7 cm is pure angle quantization (720 bins); raise `theta_disc` for less error
-(more memory). → RaycastEngine produces the **same scan as the current simulator, 2.8× faster.**
+(`cddt`/`pcddt`/`glt` ~9 cm = their `theta_disc=112` quantization — raise it for accuracy.)
+→ RaycastEngine matches the current simulator (≤3 cm) while being 1.3–6× faster, and range_libc
+can be swapped for `pcddt` (memory) or `rmgpu` (GPU) as needed.
 
 ### Precompute → save → load (`backend='lut'`) — low-end / portability
 Build the table **once, save `.npz`, then load and query with pure numpy** (no range_libc, no numba):

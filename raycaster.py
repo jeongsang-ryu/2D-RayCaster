@@ -29,7 +29,7 @@ _VENDORED_RL = os.path.join(_HERE, "range_libc", "pywrapper")
 if os.path.isdir(_VENDORED_RL) and _VENDORED_RL not in sys.path:
     sys.path.insert(0, _VENDORED_RL)               # vendored range_libc/*.so
 
-_RL_BACKENDS = ("glt", "pcddt", "cddt", "rm", "bl")
+_RL_BACKENDS = ("glt", "pcddt", "cddt", "rm", "bl", "rmgpu")
 
 
 def _load_numba_sim():
@@ -61,7 +61,8 @@ class RaycastEngine:
         if self.backend in _RL_BACKENDS:
             import range_libc
             mrpx = self.max_range_m / self.res
-            omap = range_libc.PyOMap(occ)
+            # fixed numpy ctor: sets the world transform → query in world meters
+            omap = range_libc.PyOMap(occ, resolution=self.res, origin_x=self.ox, origin_y=self.oy)
             if self.backend == "glt":
                 self._rl = range_libc.PyGiantLUTCast(omap, mrpx, self.theta_disc)
             elif self.backend in ("cddt", "pcddt"):
@@ -70,6 +71,8 @@ class RaycastEngine:
                     self._rl.prune()
             elif self.backend == "rm":
                 self._rl = range_libc.PyRayMarching(omap, mrpx)
+            elif self.backend == "rmgpu":
+                self._rl = range_libc.PyRayMarchingGPU(omap, mrpx)   # needs WITH_CUDA=ON build
             elif self.backend == "bl":
                 self._rl = range_libc.PyBresenhamsLine(omap, mrpx)
         elif self.backend == "lut":
@@ -87,13 +90,12 @@ class RaycastEngine:
         phi = pose_xyt[2] + np.linspace(-fov / 2, fov / 2, num_beams)
         if self.backend == "lut":
             return np.minimum(self._lut_lookup(pose_xyt[0], pose_xyt[1], phi), mr)
-        # range_libc: it casts (sinθ,cosθ) → world φ maps to θ_rl = π/2 - φ
-        px, py = self._w2p(pose_xyt[0], pose_xyt[1])
+        # range_libc (fixed ctor): query world (x, y, theta) directly → meters out
         q = np.empty((num_beams, 3), np.float32)
-        q[:, 0] = px; q[:, 1] = py; q[:, 2] = np.pi / 2 - phi
+        q[:, 0] = pose_xyt[0]; q[:, 1] = pose_xyt[1]; q[:, 2] = phi
         out = np.zeros(num_beams, np.float32)
         self._rl.calc_range_many(np.ascontiguousarray(q), out)
-        return np.minimum(out * self.res, mr)
+        return np.minimum(out, mr)
 
     # ---------- PARTICLE FILTER API ----------
     def calc_range_repeat_angles(self, particles_xyt, angles):
@@ -105,12 +107,10 @@ class RaycastEngine:
             yi = np.clip(yi.astype(np.int64), 0, self.H - 1)[:, None]
             k = self._abin(phi)
             return np.minimum(self._lut[xi, yi, k].astype(np.float32), self.max_range_m).reshape(M * K)
-        px, py = self._w2p(particles_xyt[:, 0], particles_xyt[:, 1])
-        parts = np.empty((M, 3), np.float32)
-        parts[:, 0] = px; parts[:, 1] = py; parts[:, 2] = np.pi / 2 - particles_xyt[:, 2]
+        parts = np.ascontiguousarray(particles_xyt[:, :3], np.float32)   # world (x,y,theta)
         out = np.zeros(M * K, np.float32)
-        self._rl.calc_range_repeat_angles(parts, np.ascontiguousarray(-angles, np.float32), out)
-        return out * self.res
+        self._rl.calc_range_repeat_angles(parts, np.ascontiguousarray(angles, np.float32), out)
+        return out                                                       # meters
 
     # ---------- LUT internals ----------
     def _abin(self, phi):

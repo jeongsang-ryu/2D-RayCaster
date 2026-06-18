@@ -135,44 +135,55 @@ def quaternion_to_angle(q):
 
 cdef class PyOMap:
     cdef OMap *thisptr      # hold a C++ instance which we're wrapping
-    def __cinit__(self, arg1, arg2=None):
+    def __cinit__(self, arg1, arg2=None, resolution=1.0, origin_x=0.0, origin_y=0.0, origin_theta=0.0):
         set_trans_params = False
-        if arg1 is not None and arg2 is not None:
-            if isinstance(arg1, int) and isinstance(arg1, int):
+        if isinstance(arg1, np.ndarray):
+            # Occupancy array [H, W] (True/nonzero = occupied), row 0 at world y =
+            # origin_y (ROS bottom-origin). Fill the grid the SAME way as the ROS
+            # OccupancyGrid path — grid[row][col] = arr[row, col] with OMap(H, W) —
+            # and set the world transform so calc_range works in WORLD meters.
+            height = int(arg1.shape[0]); width = int(arg1.shape[1])
+            self.thisptr = new OMap(<int>height, <int>width)
+            for x in range(height):
+                for y in range(width):
+                    if arg1[x, y]:
+                        self.thisptr.grid[x][y] = True
+            self.thisptr.world_scale = resolution
+            self.thisptr.world_angle = origin_theta
+            self.thisptr.world_origin_x = origin_x
+            self.thisptr.world_origin_y = origin_y
+            self.thisptr.world_sin_angle = np.sin(origin_theta)
+            self.thisptr.world_cos_angle = np.cos(origin_theta)
+            set_trans_params = True
+        elif arg1 is not None and arg2 is not None:
+            if isinstance(arg1, int) and isinstance(arg2, int):
                 self.thisptr = new OMap(<int>arg1,<int>arg2)
             else:
                 self.thisptr = new OMap(<string>arg1,<float>arg2)
+        elif arg1 is not None and USE_ROS_MAP and isinstance(arg1, OccupancyGrid):
+            map_msg = arg1
+            width, height = map_msg.info.width, map_msg.info.height
+            self.thisptr = new OMap(<int>height,<int>width)
+
+            # 0: permissible, -1: unmapped, 100: blocked
+            array_255 = np.array(map_msg.data).reshape((height, width))
+
+            for x in range(height):
+                for y in range(width):
+                    if array_255[x,y] > 10:
+                        self.thisptr.grid[x][y] = True
+
+            # cache constants for coordinate space conversion
+            angle = -1.0*quaternion_to_angle(map_msg.info.origin.orientation)
+            self.thisptr.world_scale = map_msg.info.resolution
+            self.thisptr.world_angle = angle
+            self.thisptr.world_origin_x = map_msg.info.origin.position.x
+            self.thisptr.world_origin_y = map_msg.info.origin.position.y
+            self.thisptr.world_sin_angle = np.sin(angle)
+            self.thisptr.world_cos_angle = np.cos(angle)
+            set_trans_params = True
         elif arg1 is not None:
-            if isinstance(arg1, np.ndarray):
-                height, width = arg1.shape
-                self.thisptr = new OMap(<int>height,<int>width)
-                for y in xrange(height):
-                    for x in xrange(width):
-                        self.thisptr.grid[x][y] = <bool>arg1[y,x]
-            elif USE_ROS_MAP and isinstance(arg1, OccupancyGrid):
-                map_msg = arg1
-                width, height = map_msg.info.width, map_msg.info.height
-                self.thisptr = new OMap(<int>height,<int>width)
-
-                # 0: permissible, -1: unmapped, 100: blocked
-                array_255 = np.array(map_msg.data).reshape((height, width))
-
-                for x in xrange(height):
-                    for y in xrange(width):
-                        if array_255[x,y] > 10:
-                            self.thisptr.grid[x][y] = True
-
-                # cache constants for coordinate space conversion
-                angle = -1.0*quaternion_to_angle(map_msg.info.origin.orientation)
-                self.thisptr.world_scale = map_msg.info.resolution
-                self.thisptr.world_angle = angle
-                self.thisptr.world_origin_x = map_msg.info.origin.position.x
-                self.thisptr.world_origin_y = map_msg.info.origin.position.y
-                self.thisptr.world_sin_angle = np.sin(angle)
-                self.thisptr.world_cos_angle = np.cos(angle)
-                set_trans_params = True
-            else:
-                self.thisptr = new OMap(arg1)
+            self.thisptr = new OMap(arg1)
         else:
             print("Failed to construct PyOMap, check argument types.")
             self.thisptr = new OMap(1,1)
