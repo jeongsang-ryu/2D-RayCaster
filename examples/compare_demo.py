@@ -99,7 +99,7 @@ class CompareDemo(Node):
         t.transform.rotation.z = math.sin(ego[2] / 2); t.transform.rotation.w = math.cos(ego[2] / 2)
         self.tfb.sendTransform(t)
         for label, e, pub in self.engines:
-            scan = e.scan(ego, self.nb, self.fov)
+            scan = e.scan(ego, self.nb, self.fov, miss=np.nan)   # un-returned beams -> NaN (no false max-range wall)
             s = LaserScan(); s.header.stamp = now; s.header.frame_id = "laser"
             s.angle_min = -self.fov / 2; s.angle_max = self.fov / 2; s.angle_increment = self.fov / (self.nb - 1)
             s.range_min = 0.0; s.range_max = float(self.mr); s.ranges = scan.astype(np.float32).tolist()

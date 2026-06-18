@@ -85,17 +85,29 @@ class RaycastEngine:
         return (x - self.ox) / self.res, (y - self.oy) / self.res
 
     # ---------- SIMULATOR API ----------
-    def scan(self, pose_xyt, num_beams, fov, max_range=None):
+    @staticmethod
+    def _apply_miss(out, mr, miss):
+        """Real lidars report no-return (not max_range) when a beam hits nothing.
+        miss=None keeps the clamped max_range (PF/benchmark default); miss=nan/inf
+        marks un-returned beams so they are not drawn as a false wall at max_range."""
+        if miss is None:
+            return out
+        # tol = 1 cell: precompute backends (glt/cddt) return ~max_range-epsilon (not exactly mr)
+        # for un-returned beams, so a tight threshold would still draw them as a false wall.
+        return np.where(out >= mr - 1e-3, miss, out).astype(np.float64)
+
+    def scan(self, pose_xyt, num_beams, fov, max_range=None, miss=None):
         mr = max_range or self.max_range_m
         phi = pose_xyt[2] + np.linspace(-fov / 2, fov / 2, num_beams)
         if self.backend == "lut":
-            return np.minimum(self._lut_lookup(pose_xyt[0], pose_xyt[1], phi), mr)
+            out = np.minimum(self._lut_lookup(pose_xyt[0], pose_xyt[1], phi), mr)
+            return self._apply_miss(out, mr, miss)
         # range_libc (fixed ctor): query world (x, y, theta) directly → meters out
         q = np.empty((num_beams, 3), np.float32)
         q[:, 0] = pose_xyt[0]; q[:, 1] = pose_xyt[1]; q[:, 2] = phi
         out = np.zeros(num_beams, np.float32)
         self._rl.calc_range_many(np.ascontiguousarray(q), out)
-        return np.minimum(out, mr)
+        return self._apply_miss(np.minimum(out, mr), mr, miss)
 
     # ---------- PARTICLE FILTER API ----------
     def calc_range_repeat_angles(self, particles_xyt, angles):
@@ -121,12 +133,13 @@ class RaycastEngine:
         return loc @ np.array([[c, s], [-s, c]]) + np.asarray(pose[:2])   # [4,2] world
 
     def scan_with_dynamics(self, pose, num_beams, fov, opp_poses=None,
-                           opp_size=(0.58, 0.31), obstacles=None, max_range=None):
+                           opp_size=(0.58, 0.31), obstacles=None, max_range=None, miss=np.nan):
         """Static precomputed scan + ray-cast overlay of opponents (rotated boxes)
         and obstacles (circles, [K,3] = x,y,radius). Per beam: min(static, dynamic).
-        Same idea f1tenth_gym uses for opponents — keeps GLT/CDDT/LUT precompute intact."""
+        Same idea f1tenth_gym uses for opponents — keeps GLT/CDDT/LUT precompute intact.
+        miss (default nan) marks beams that returned nothing within max_range."""
         mr = max_range or self.max_range_m
-        scan = self.scan(pose, num_beams, fov, mr).astype(np.float64)
+        scan = self.scan(pose, num_beams, fov, mr).astype(np.float64)   # max_range on miss; nan applied at end
         ang = pose[2] + np.linspace(-fov / 2, fov / 2, num_beams)
         dx, dy = np.cos(ang), np.sin(ang)
         px, py = float(pose[0]), float(pose[1])
@@ -150,7 +163,7 @@ class RaycastEngine:
                     u = (dx * wy - dy * wx) / den
                     ok = safe & (t > 0) & (u >= 0) & (u <= 1) & (t < scan)
                     scan = np.where(ok, t, scan)
-        return np.minimum(scan, mr)
+        return self._apply_miss(np.minimum(scan, mr), mr, miss)
 
     # ---------- LUT internals ----------
     def _abin(self, phi):
