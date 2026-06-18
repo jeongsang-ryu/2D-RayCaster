@@ -112,6 +112,46 @@ class RaycastEngine:
         self._rl.calc_range_repeat_angles(parts, np.ascontiguousarray(angles, np.float32), out)
         return out                                                       # meters
 
+    # ---------- dynamic overlays (NO map rebuild — works with precompute backends) ----------
+    @staticmethod
+    def _vertices(pose, length, width):
+        c, s = np.cos(pose[2]), np.sin(pose[2])
+        loc = np.array([[length/2, width/2], [length/2, -width/2],
+                        [-length/2, -width/2], [-length/2, width/2]])
+        return loc @ np.array([[c, s], [-s, c]]) + np.asarray(pose[:2])   # [4,2] world
+
+    def scan_with_dynamics(self, pose, num_beams, fov, opp_poses=None,
+                           opp_size=(0.58, 0.31), obstacles=None, max_range=None):
+        """Static precomputed scan + ray-cast overlay of opponents (rotated boxes)
+        and obstacles (circles, [K,3] = x,y,radius). Per beam: min(static, dynamic).
+        Same idea f1tenth_gym uses for opponents — keeps GLT/CDDT/LUT precompute intact."""
+        mr = max_range or self.max_range_m
+        scan = self.scan(pose, num_beams, fov, mr).astype(np.float64)
+        ang = pose[2] + np.linspace(-fov / 2, fov / 2, num_beams)
+        dx, dy = np.cos(ang), np.sin(ang)
+        px, py = float(pose[0]), float(pose[1])
+        if obstacles is not None and len(obstacles):                      # ray vs circle
+            for cx, cy, r in np.asarray(obstacles, float):
+                ox, oy = cx - px, cy - py
+                proj = ox * dx + oy * dy
+                perp2 = (ox * ox + oy * oy) - proj * proj
+                hit = (perp2 < r * r) & (proj > 0)
+                d = proj - np.sqrt(np.maximum(r * r - perp2, 0.0))
+                scan = np.where(hit & (d < scan), d, scan)
+        if opp_poses is not None and len(opp_poses):                      # ray vs box edges
+            for op in np.asarray(opp_poses, float):
+                V = self._vertices(op, opp_size[0], opp_size[1]); W = np.roll(V, -1, 0)
+                for a, e in zip(V, W - V):
+                    det = e[0] * dy - e[1] * dx
+                    safe = np.abs(det) > 1e-12
+                    den = np.where(safe, det, 1.0)
+                    wx, wy = a[0] - px, a[1] - py
+                    t = (e[0] * wy - e[1] * wx) / den
+                    u = (dx * wy - dy * wx) / den
+                    ok = safe & (t > 0) & (u >= 0) & (u <= 1) & (t < scan)
+                    scan = np.where(ok, t, scan)
+        return np.minimum(scan, mr)
+
     # ---------- LUT internals ----------
     def _abin(self, phi):
         w = (phi - self._amin) % (2 * np.pi) + self._amin
