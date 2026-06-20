@@ -7,13 +7,32 @@ no numpy at build), plus a unified [`RaycastEngine`](raycaster.py) that the
 F1TENTH simulator and particle filter share.
 
 ```python
-import numpy as np, range_libc
-occ = np.load("map.npy")                       # bool [H, W], True = occupied
-omap = range_libc.PyOMap(occ, resolution=0.05, origin_x=0.0, origin_y=0.0)
-rm   = range_libc.PyRayMarching(omap, 10.0/0.05)
-out  = np.zeros(1080, np.float32)
-rm.calc_range_many(queries_xyT, out)           # queries [N,3] in world meters
+import numpy as np            # two separate imports; `as np` aliases ONLY numpy,
+import range_libc             # range_libc keeps its own name (no alias)
+from raycaster import RaycastEngine
+
+# load the bundled sample map (maps/sample_map.{png,yaml}, ROS map_server format)
+occ, res, origin = RaycastEngine.load_map_yaml("maps/sample_map.yaml")   # occ[H,W] bool
+
+# --- one LiDAR scan with range_libc directly ---
+omap = range_libc.PyOMap(occ, resolution=res, origin_x=origin[0], origin_y=origin[1])
+rm   = range_libc.PyRayMarching(omap, 10.0 / res)
+pose, n, fov = [7.5, 2.5, 0.0], 1080, 4.7                   # (x,y,heading) in world meters
+q = np.zeros((n, 3), np.float32)
+q[:, 0], q[:, 1] = pose[0], pose[1]
+q[:, 2] = pose[2] + np.linspace(-fov/2, fov/2, n).astype(np.float32)
+ranges = np.zeros(n, np.float32)
+rm.calc_range_many(q, ranges)                               # queries [N,3] -> ranges [N]
+print(ranges.min(), ranges.mean(), ranges.max())           # 2.30 3.14 6.38
+
+# --- or the high-level engine (what the sim + particle filter share) ---
+eng = RaycastEngine(backend="rm", max_range_m=10.0, theta_disc=360).set_map(occ, res, origin)
+ranges = eng.scan(pose, n, fov)                            # identical result
 ```
+
+> `import numpy as np, range_libc` (one line) is valid too — the comma separates
+> two imports and `as np` binds only numpy. The runnable version of the above is
+> [`examples/quickstart.py`](examples/quickstart.py).
 
 No ROS, numba, or Cython is required to build or run the CPU library.
 
