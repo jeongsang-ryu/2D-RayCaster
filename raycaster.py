@@ -3,13 +3,13 @@
 RaycastEngine — one 2D LiDAR raycaster for BOTH the simulator and the particle filter.
 
 Backends
-  'lut'   : precomputed numpy table, built from the numba f1tenth_gym oracle.
-            Frame-matches the existing simulator exactly; pure-numpy at query time
-            → NO range_libc needed → portable to NUC / Mac mini. ★ recommended.
-  'pcddt' | 'cddt' | 'rm' | 'glt' | 'bl' : vendored range_libc C++ (fast).
-            NOTE: range_libc's numpy-array PyOMap has a coordinate quirk on real
-            (flipped / non-square) maps — use the 'lut' backend for a verified
-            drop-in, or load maps via range_libc's own PNG/ROS-grid path.
+  'rm'    : vendored range_libc C++ RayMarching (exact DT sphere-tracing). ★ DEFAULT.
+            Fast and exact; needs the range_libc extension (installed via
+            environment.yml / `pip install -e .../range_libc/pywrapper`).
+  'pcddt' | 'cddt' | 'glt' | 'bl' | 'rmgpu' : other range_libc C++ backends.
+  'lut'   : precomputed numpy table (built from the numba f1tenth_gym oracle).
+            Pure-numpy at query time → NO range_libc needed (portable fallback),
+            but LUT build is slow under the numba shim, so prefer 'rm' here.
 
 Consumers
   Simulator      : scan(pose_xyt, num_beams, fov)              -> ranges[num_beams]  (m)
@@ -42,7 +42,7 @@ def _load_numba_sim():
 
 
 class RaycastEngine:
-    def __init__(self, backend="lut", max_range_m=10.0, theta_disc=360):
+    def __init__(self, backend="rm", max_range_m=10.0, theta_disc=360):
         self.backend = backend
         self.max_range_m = float(max_range_m)
         self.theta_disc = int(theta_disc)
